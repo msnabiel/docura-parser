@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: docura-parser
+    env: python
+    plan: free
+    buildCommand: pip install --upgrade pip setuptools wheel && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    runtime: python
+    region: oregon
