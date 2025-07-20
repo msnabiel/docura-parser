@@ -24,6 +24,7 @@ et_xmlfile==2.0.0
 # Image processing and OCR
 pillow==10.3.0
 pytesseract==0.3.10
+opencv-python==4.9.0.80
 
 # Web content processing
 beautifulsoup4==4.12.3
