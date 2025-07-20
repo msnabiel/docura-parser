@@ -1,0 +1,13 @@
+# render.yaml
+
+services:
+  - type: web
+    name: docura-parser
+    env: docker
+    plan: free
+    branch: main
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: 10000
