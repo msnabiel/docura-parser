@@ -22,7 +22,7 @@ import pandas as pd
 from tempfile import NamedTemporaryFile
 import xlrd
 import nltk
-import numpy as np  # Keep this if used
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -393,19 +393,10 @@ def extract_excel_text(file_bytes: bytes, ext: str) -> tuple[str, dict]:
 async def root():
     return {
         "message": "Enhanced Document Parser for RAG", 
-        "version": "4.0.0",
-        "status": "running",
         "supported_formats": list(EXTRACTORS.keys()),
-        "features": ["OCR support", "Sentence-based chunking", "Fallback mechanisms", "Enhanced cleaning"],
-        "endpoints": {
-            "parse": "/parse - Parse single document",
-            "parse_batch": "/parse-batch - Parse multiple documents",
-            "health": "/health - Health check"
-        }
+        "features": ["OCR support", "Sentence-based chunking", "Fallback mechanisms", "Enhanced cleaning"]
     }
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
 @app.post("/parse", response_model=DocumentResult)
 async def parse_file(
     file: UploadFile = File(...),
@@ -570,6 +561,7 @@ async def parse_batch(
 
 if __name__ == "__main__":
     import uvicorn
+    import numpy as np  # Keep this if used
     import os
 
     port = int(os.getenv("PORT", 8000))  # Default to 8000 if not set
