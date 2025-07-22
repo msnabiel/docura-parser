@@ -42,7 +42,6 @@ class CleaningOptions(BaseModel):
     remove_emails: bool = True
     clean_whitespace: bool = True
     preserve_structure: bool = True
-    max_length: int = 100000
     enable_ocr: bool = True
     aggressive_cleaning: bool = True
 
@@ -108,9 +107,6 @@ class EnhancedRAGTextCleaner:
         
         # Remove excessive whitespace again after all processing
         text = re.sub(r' +', ' ', text)
-        
-        if len(text) > self.options.max_length:
-            text = text[:self.options.max_length].rsplit(' ', 1)[0] + "..."
         
         return text.strip()
 
@@ -201,6 +197,10 @@ class DocumentChunker:
         
         return chunks
 
+class ExtractionMode(str, Enum):
+    HYBRID = "hybrid"
+    FAST = "fast"
+
 def merge_and_deduplicate_texts(texts: list[str]) -> str:
     """Merge multiple text sources, deduplicate lines, and preserve order."""
     seen = set()
@@ -222,6 +222,7 @@ def extract_pdf_hybrid(file_bytes: bytes, enable_ocr: bool = True) -> tuple[str,
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         meta["pages"] = doc.page_count
+        print(f"Number of pages: {meta['pages']}")
         meta["methods"].append("PyMuPDF-layout")
         layout_texts = []
         for page_num in range(doc.page_count):
@@ -489,6 +490,7 @@ def extract_pdf_fast(file_bytes: bytes, enable_ocr: bool = True) -> tuple[str, d
         # First try PyMuPDF for better text extraction
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         metadata["pages"] = doc.page_count
+        print(f"Number of pages: {metadata['pages']}")
         metadata["method"] = "PyMuPDF"
         
         for page_num in range(doc.page_count):
@@ -695,7 +697,6 @@ async def parse_file(
     remove_emails: bool = Query(True),
     clean_whitespace: bool = Query(True),
     preserve_structure: bool = Query(True),
-    max_length: int = Query(100000),
     enable_ocr: bool = Query(True),
     aggressive_cleaning: bool = Query(True),
     # Chunking options
@@ -728,7 +729,7 @@ async def parse_file(
             raw_text, metadata = EXTRACTORS[ext](content, **relevant_kwargs)
         else: # Handle callables that might not be wrapped to accept **kwargs
             if ext in [".xlsx", ".xls"]:
-                 raw_text, metadata = EXTRACTORS[ext](content, ext)
+                raw_text, metadata = EXTRACTORS[ext](content, ext)
             elif ext == ".pdf":
                  raw_text, metadata = EXTRACTORS[ext](content, enable_ocr=enable_ocr, mode=extraction_mode)
             else:
@@ -744,7 +745,6 @@ async def parse_file(
             remove_emails=remove_emails,
             clean_whitespace=clean_whitespace,
             preserve_structure=preserve_structure,
-            max_length=max_length,
             enable_ocr=enable_ocr,
             aggressive_cleaning=aggressive_cleaning
         )
