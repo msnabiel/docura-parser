@@ -197,6 +197,10 @@ class DocumentChunker:
         
         return chunks
 
+class ExtractionMode(str, Enum):
+    HYBRID = "hybrid"
+    FAST = "fast"
+
 def merge_and_deduplicate_texts(texts: list[str]) -> str:
     """Merge multiple text sources, deduplicate lines, and preserve order."""
     seen = set()
@@ -210,11 +214,10 @@ def merge_and_deduplicate_texts(texts: list[str]) -> str:
     return '\n'.join(merged)
 
 
-def extract_pdf(file_bytes: bytes, enable_ocr: bool = True, extract_tables: bool = True) -> tuple[str, dict]:
-    """Optimized PDF extraction: combine PyMuPDF (layout-aware), PyPDF2, Camelot tables, and OCR for every page."""
+def extract_pdf_hybrid(file_bytes: bytes, enable_ocr: bool = True) -> tuple[str, dict]:
+    """Hybrid PDF extraction: combine PyMuPDF (layout-aware), PyPDF2, Camelot tables, and OCR for every page."""
     results = []
     meta = {"pages": 0, "methods": [], "ocr_pages": [], "fallback_used": False, "tables": 0, "table_pages": [], "layout_blocks": 0}
-    
     # PyMuPDF layout-aware extraction
     try:
         print(f"Extracting with PyMuPDF layout-aware...")
@@ -235,7 +238,6 @@ def extract_pdf(file_bytes: bytes, enable_ocr: bool = True, extract_tables: bool
     except Exception as e:
         logger.error(f"PyMuPDF layout-aware extraction failed: {e}")
         meta["fallback_used"] = True
-    
     # PyMuPDF dict extraction (for structure)
     try:
         print(f"Extracting with PyMuPDF dict...")
@@ -254,7 +256,6 @@ def extract_pdf(file_bytes: bytes, enable_ocr: bool = True, extract_tables: bool
     except Exception as e:
         logger.error(f"PyMuPDF dict extraction failed: {e}")
         meta["fallback_used"] = True
-    
     # PyPDF2
     try:
         print(f"Extracting with PyPDF2...")
@@ -265,60 +266,33 @@ def extract_pdf(file_bytes: bytes, enable_ocr: bool = True, extract_tables: bool
     except Exception as e:
         logger.error(f"PyPDF2 failed: {e}")
         meta["fallback_used"] = True
-    
     # Camelot table extraction
-    if extract_tables:
+    try:
+        print(f"Extracting tables with Camelot...")
+        # Save to temp file for Camelot
+        with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        tables = camelot.read_pdf(tmp_path, pages="all")
         try:
-            print("Extracting tables with Camelot...")
-            with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(file_bytes)
-                tmp_path = tmp.name
-
-            table_texts = []
-            tables = None
-
-            try:
-                tables = camelot.read_pdf(tmp_path, pages="all", flavor="lattice")
-                if tables.n == 0:
-                    raise ValueError("No tables found with lattice")
-            except Exception as e:
-                logger.warning(f"Lattice mode failed or returned no tables: {e}. Trying stream mode.")
-                try:
-                    tables = camelot.read_pdf(tmp_path, pages="all", flavor="stream")
-                except Exception as e_stream:
-                    logger.warning(f"Stream mode also failed: {e_stream}")
-                    tables = None
-
-            if tables:
-                for table in tables:
-                    df = table.df
-                    table_str = df.to_string(index=False, header=True)
-                    table_texts.append(f"[Table page {table.parsing_report.get('page', '?')}]\n{table_str}")
-                    meta["table_pages"].append(table.parsing_report.get("page", "?"))
-
-            if table_texts:
-                results.extend(table_texts)
-                meta["tables"] = len(table_texts)
-                meta["methods"].append("Camelot")
-            else:
-                meta["tables"] = 0
-                meta["table_pages"] = []
-                meta["methods"].append("Camelot-no-tables")
-
+            tables = camelot.read_pdf(tmp_path, pages="all", flavor="lattice")
         except Exception as e:
-            logger.warning(f"Camelot table extraction failed: {e}")
-            meta["tables"] = 0
-            meta["table_pages"] = []
-            meta["methods"].append("Camelot-error")
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-    else:
-        meta["tables"] = 0
-        meta["table_pages"] = []
-        meta["methods"].append("Camelot-skipped")
-
-    
+            logger.warning(f"Lattice mode failed: {e}. Trying stream mode.")
+            tables = camelot.read_pdf(tmp_path, pages="all", flavor="stream")
+        tables = camelot.read_pdf(tmp_path, pages="all", flavor="stream")
+        table_texts = []
+        for i, table in enumerate(tables):
+            df = table.df
+            table_str = df.to_string(index=False, header=True)
+            table_texts.append(f"[Table page {table.parsing_report.get('page', '?')}]\n{table_str}")
+            meta["table_pages"].append(table.parsing_report.get('page', '?'))
+        if table_texts:
+            results.extend(table_texts)
+            meta["tables"] = len(table_texts)
+            meta["methods"].append("Camelot")
+        os.remove(tmp_path)
+    except Exception as e:
+        logger.warning(f"Camelot table extraction failed: {e}")
     # OCR for every page
     ocr_texts = []
     try:
@@ -338,17 +312,15 @@ def extract_pdf(file_bytes: bytes, enable_ocr: bool = True, extract_tables: bool
             meta["methods"].append("OCR-Tesseract")
     except Exception as e:
         logger.warning(f"OCR failed for PDF pages: {e}")
-    
     # Merge and deduplicate
     merged = merge_and_deduplicate_texts(results)
     return merged.strip(), meta
 
 
-def extract_image(file_bytes: bytes) -> tuple[str, dict]:
-    """Optimized image extraction: run Tesseract and EasyOCR, merge results."""
+def extract_image_hybrid(file_bytes: bytes) -> tuple[str, dict]:
+    """Hybrid image extraction: run Tesseract and EasyOCR, merge results."""
     results = []
     meta = {"methods": [], "preprocessing": [], "fallback_used": False}
-    
     # Tesseract OCR (basic and preprocessed)
     print(f"Extracting with Tesseract...")
     try:
@@ -361,7 +333,6 @@ def extract_image(file_bytes: bytes) -> tuple[str, dict]:
     except Exception as e:
         logger.warning(f"Tesseract basic OCR failed: {e}")
         meta["fallback_used"] = True
-    
     # Tesseract OCR (preprocessed)
     print(f"Extracting with Tesseract preprocessed...")
     try:
@@ -379,7 +350,6 @@ def extract_image(file_bytes: bytes) -> tuple[str, dict]:
     except Exception as e:
         logger.warning(f"Tesseract preprocessed OCR failed: {e}")
         meta["fallback_used"] = True
-    
     # EasyOCR
     print(f"Extracting with EasyOCR...")
     try:
@@ -392,7 +362,6 @@ def extract_image(file_bytes: bytes) -> tuple[str, dict]:
     except Exception as e:
         logger.warning(f"EasyOCR failed: {e}")
         meta["fallback_used"] = True
-    
     # Merge and deduplicate
     merged = merge_and_deduplicate_texts(results)
     meta["image_size"] = img.shape if 'img' in locals() else None
@@ -429,10 +398,10 @@ def extract_email_text(file_bytes: bytes) -> tuple[str, dict]:
         logger.error(f"Error reading email: {e}")
         return "", {"error": str(e)}
 
-def extract_docx(file_bytes: bytes) -> tuple[str, dict]:
-    """Optimized DOCX extraction: visible text, tables, comments, and core properties."""
+def extract_docx_hybrid(file_bytes: bytes, mode: str = 'hybrid') -> tuple[str, dict]:
+    """Hybrid DOCX extraction: visible text, tables, comments, and core properties."""
     results = []
-    meta = {"methods": [], "comments": 0, "tables": 0, "core_properties": {}, "mode": "optimized"}
+    meta = {"methods": [], "comments": 0, "tables": 0, "core_properties": {}, "mode": mode}
     try:
         doc = Document(BytesIO(file_bytes))
         # Visible text
@@ -481,10 +450,10 @@ def extract_docx(file_bytes: bytes) -> tuple[str, dict]:
         return "", {"error": str(e)}
 
 
-def extract_pptx(file_bytes: bytes) -> tuple[str, dict]:
-    """Optimized PPTX extraction: slides, notes, shapes, and core properties."""
+def extract_pptx_hybrid(file_bytes: bytes, mode: str = 'hybrid') -> tuple[str, dict]:
+    """Hybrid PPTX extraction: slides, notes, shapes, and core properties."""
     results = []
-    meta = {"methods": [], "slides": 0, "notes": 0, "core_properties": {}, "mode": "optimized"}
+    meta = {"methods": [], "slides": 0, "notes": 0, "core_properties": {}, "mode": mode}
     try:
         prs = Presentation(BytesIO(file_bytes))
         # Slides text
@@ -525,6 +494,171 @@ def extract_pptx(file_bytes: bytes) -> tuple[str, dict]:
         logger.error(f"Error reading PPTX: {e}")
         return "", {"error": str(e)}
 
+def extract_pdf_fast(file_bytes: bytes, enable_ocr: bool = True) -> tuple[str, dict]:
+    """Enhanced PDF extraction with OCR fallback"""
+    text = ""
+    metadata = {"pages": 0, "method": "unknown", "ocr_used": False}
+    fallback_used = False
+    
+    try:
+        # First try PyMuPDF for better text extraction
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        metadata["pages"] = doc.page_count
+        print(f"Number of pages: {metadata['pages']}")
+        metadata["method"] = "PyMuPDF"
+        
+        for page_num in range(doc.page_count):
+            page = doc.load_page(page_num)
+            page_text = page.get_text()
+            
+            # If no text found and OCR is enabled, try OCR
+            if not page_text.strip() and enable_ocr:
+                try:
+                    # Convert page to image
+                    pix = page.get_pixmap()
+                    img_data = pix.tobytes("png")
+                    img = Image.open(BytesIO(img_data))
+                    
+                    # OCR the image
+                    ocr_text = pytesseract.image_to_string(img)
+                    page_text = ocr_text
+                    metadata["ocr_used"] = True
+                    logger.info(f"Used OCR for page {page_num + 1}")
+                except Exception as e:
+                    logger.warning(f"OCR failed for page {page_num + 1}: {e}")
+            
+            text += page_text + "\n"
+        
+        doc.close()
+        
+    except Exception as e:
+        logger.error(f"Error with PyMuPDF, falling back to PyPDF2: {e}")
+        fallback_used = True
+        try:
+            reader = PdfReader(BytesIO(file_bytes))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            metadata = {"pages": len(reader.pages), "method": "PyPDF2_fallback"}
+        except Exception as e2:
+            logger.error(f"Error with PyPDF2 fallback: {e2}")
+            raise HTTPException(500, f"Failed to extract PDF text: {str(e2)}")
+    
+    metadata["fallback_used"] = fallback_used
+    return text.strip(), metadata
+
+
+def extract_image_fast(file_bytes: bytes) -> tuple[str, dict]:
+    """Enhanced image text extraction with preprocessing"""
+    try:
+        # Load image
+        img = Image.open(BytesIO(file_bytes))
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Convert PIL to OpenCV format for preprocessing
+        img_array = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
+        
+        # Apply preprocessing to improve OCR
+        gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        
+        # OCR with enhanced config
+        custom_config = r'--oem 3 --psm 6'
+        text = pytesseract.image_to_string(gray, config=custom_config)
+        
+        return text.strip(), {"image_size": img.size, "preprocessing": "OTSU_threshold"}
+    
+    except Exception as e:
+        # Fallback to basic OCR without preprocessing
+        logger.warning(f"Enhanced OCR failed, falling back to basic: {e}")
+        img = Image.open(BytesIO(file_bytes))
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        text = pytesseract.image_to_string(img)
+        return text.strip(), {"image_size": img.size, "fallback_used": True}
+
+
+def extract_docx_fast(file_bytes: bytes) -> tuple[str, dict]:
+    """Enhanced DOCX extraction"""
+    try:
+        doc = Document(BytesIO(file_bytes))
+        paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
+        
+        # Extract table content
+        table_text = []
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = [cell.text.strip() for cell in row.cells]
+                table_text.append(" | ".join(row_text))
+        
+        text = "\n".join(paragraphs)
+        if table_text:
+            text += "\n\nTables:\n" + "\n".join(table_text)
+        
+        return text.strip(), {
+            "paragraphs": len(paragraphs), 
+            "tables": len(doc.tables),
+            "method": "python-docx"
+        }
+    except Exception as e:
+        logger.error(f"Error reading DOCX: {e}")
+        return "", {"error": str(e)}
+
+
+def extract_pptx_fast(file_bytes: bytes) -> tuple[str, dict]:
+    prs = Presentation(BytesIO(file_bytes))
+    slides_text = []
+    
+    for i, slide in enumerate(prs.slides, 1):
+        slide_content = []
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                slide_content.append(shape.text.strip())
+        if slide_content:
+            slides_text.append(f"Slide {i}:\n" + "\n".join(slide_content))
+    
+    return "\n\n".join(slides_text), {"slides": len(prs.slides)}
+
+
+def extract_pdf(file_bytes: bytes, enable_ocr: bool = True, mode: ExtractionMode = ExtractionMode.HYBRID) -> tuple[str, dict]:
+    if mode == ExtractionMode.FAST:
+        return extract_pdf_fast(file_bytes, enable_ocr)
+    return extract_pdf_hybrid(file_bytes, enable_ocr)
+
+def extract_image(file_bytes: bytes, mode: ExtractionMode = ExtractionMode.HYBRID) -> tuple[str, dict]:
+    if mode == ExtractionMode.FAST:
+        return extract_image_fast(file_bytes)
+    return extract_image_hybrid(file_bytes)
+
+def extract_docx(file_bytes: bytes, mode: ExtractionMode = ExtractionMode.HYBRID) -> tuple[str, dict]:
+    if mode == ExtractionMode.FAST:
+        return extract_docx_fast(file_bytes)
+    return extract_docx_hybrid(file_bytes)
+
+def extract_pptx(file_bytes: bytes, mode: ExtractionMode = ExtractionMode.HYBRID) -> tuple[str, dict]:
+    if mode == ExtractionMode.FAST:
+        return extract_pptx_fast(file_bytes)
+    return extract_pptx_hybrid(file_bytes)
+
+
+# Update extractors to include new formats and enhanced versions
+EXTRACTORS = {
+    ".pdf": extract_pdf,
+    ".docx": extract_docx,
+    ".pptx": extract_pptx,
+    ".png": extract_image,
+    ".jpg": extract_image,
+    ".jpeg": extract_image,
+    ".tiff": extract_image,
+    ".bmp": extract_image,
+    ".txt": lambda content, **kwargs: (content.decode("utf-8", errors="ignore").strip(), {"encoding": "utf-8"}),
+    ".eml": lambda content, **kwargs: extract_email_text(content),
+    ".html": lambda content, **kwargs: (BeautifulSoup(content, "html.parser").get_text(separator='\n').strip(), {"parser": "html.parser"}),
+    ".csv": lambda content, **kwargs: pd.read_csv(BytesIO(content)).to_string(index=False) if content else ("", {}),
+    ".json": lambda content, **kwargs: (json.dumps(json.loads(content.decode("utf-8", errors="ignore")), indent=2, ensure_ascii=False), {"valid": True}),
+    ".xlsx": lambda content, ext, **kwargs: extract_excel_text(content, ext),
+    ".xls": lambda content, ext, **kwargs: extract_excel_text(content, ext),
+}
+
 def extract_excel_text(file_bytes: bytes, ext: str) -> tuple[str, dict]:
     with NamedTemporaryFile(delete=False, suffix=ext) as tmp:
         tmp.write(file_bytes)
@@ -549,24 +683,6 @@ def extract_excel_text(file_bytes: bytes, ext: str) -> tuple[str, dict]:
     finally:
         os.remove(tmp_path)
 
-EXTRACTORS = {
-    ".pdf": extract_pdf,
-    ".docx": extract_docx,
-    ".pptx": extract_pptx,
-    ".png": extract_image,
-    ".jpg": extract_image,
-    ".jpeg": extract_image,
-    ".tiff": extract_image,
-    ".bmp": extract_image,
-    ".txt": lambda content, **kwargs: (content.decode("utf-8", errors="ignore").strip(), {"encoding": "utf-8"}),
-    ".eml": lambda content, **kwargs: extract_email_text(content),
-    ".html": lambda content, **kwargs: (BeautifulSoup(content, "html.parser").get_text(separator='\n').strip(), {"parser": "html.parser"}),
-    ".csv": lambda content, **kwargs: pd.read_csv(BytesIO(content)).to_string(index=False) if content else ("", {}),
-    ".json": lambda content, **kwargs: (json.dumps(json.loads(content.decode("utf-8", errors="ignore")), indent=2, ensure_ascii=False), {"valid": True}),
-    ".xlsx": lambda content, ext, **kwargs: extract_excel_text(content, ext),
-    ".xls": lambda content, ext, **kwargs: extract_excel_text(content, ext),
-}
-
 @app.get("/")
 async def root():
     return {
@@ -587,6 +703,8 @@ async def health_check():
 @app.post("/parse", response_model=DocumentResult)
 async def parse_file(
     file: UploadFile = File(...),
+    # Extraction options
+    extraction_mode: ExtractionMode = Query(ExtractionMode.HYBRID, description="Set extraction mode: 'hybrid' for accuracy, 'fast' for speed."),
     # Cleaning options
     normalize_unicode: bool = Query(True),
     remove_urls: bool = Query(True),
@@ -601,9 +719,7 @@ async def parse_file(
     window_size: int = Query(8),
     overlap: int = Query(2),
     chunk_size: int = Query(1000),
-    chunk_overlap: int = Query(200),
-    # Extraction options
-    extract_tables: bool = Query(True, description="Extract tables using Camelot (may be slow for large PDFs).")
+    chunk_overlap: int = Query(200)
 ):
     start_time = datetime.now()
     fallback_used = False
@@ -617,7 +733,7 @@ async def parse_file(
             raise HTTPException(400, f"Unsupported file type: {ext}. Supported: {list(EXTRACTORS.keys())}")
         
         # Extract text with enhanced methods
-        extractor_kwargs = {'enable_ocr': enable_ocr, 'extract_tables': extract_tables}
+        extractor_kwargs = {'mode': extraction_mode, 'enable_ocr': enable_ocr, 'ext': ext}
         
         # Select only relevant kwargs for the extractor
         sig = inspect.signature(EXTRACTORS[ext])
@@ -629,9 +745,9 @@ async def parse_file(
             if ext in [".xlsx", ".xls"]:
                 raw_text, metadata = EXTRACTORS[ext](content, ext)
             elif ext == ".pdf":
-                 raw_text, metadata = EXTRACTORS[ext](content, enable_ocr=enable_ocr, extract_tables=extract_tables)
+                 raw_text, metadata = EXTRACTORS[ext](content, enable_ocr=enable_ocr, mode=extraction_mode)
             else:
-                 raw_text, metadata = EXTRACTORS[ext](content)
+                 raw_text, metadata = EXTRACTORS[ext](content, mode=extraction_mode)
 
         ocr_used = metadata.get("ocr_used", False) or (isinstance(metadata.get("ocr_pages"), list) and len(metadata.get("ocr_pages")) > 0)
         fallback_used = metadata.get("fallback_used", False)
@@ -702,23 +818,7 @@ async def parse_file(
 async def parse_batch(
     files: List[UploadFile] = File(...),
     max_workers: int = Query(4, ge=1, le=10),
-    # Cleaning options
-    normalize_unicode: bool = Query(True),
-    remove_urls: bool = Query(True),
-    remove_emails: bool = Query(True),
-    clean_whitespace: bool = Query(True),
-    preserve_structure: bool = Query(True),
-    enable_ocr: bool = Query(True),
-    aggressive_cleaning: bool = Query(True),
-    # Chunking options
-    create_chunks: bool = Query(False),
-    use_sentence_chunking: bool = Query(True),
-    window_size: int = Query(8),
-    overlap: int = Query(2),
-    chunk_size: int = Query(1000),
-    chunk_overlap: int = Query(200),
-    # Extraction options
-    extract_tables: bool = Query(True, description="Extract tables using Camelot (may be slow for large PDFs).")
+    extraction_mode: ExtractionMode = Query(ExtractionMode.HYBRID, description="Set extraction mode for the whole batch.")
 ):
     """Process multiple files in parallel"""
     start_time = datetime.now()
@@ -735,28 +835,20 @@ async def parse_batch(
             
             # Process with default settings
             if ext == ".pdf":
-                raw_text, metadata = extract_pdf(content, enable_ocr=True, extract_tables=extract_tables)
+                raw_text, metadata = extract_pdf(content, enable_ocr=True, mode=extraction_mode)
             elif ext in [".xlsx", ".xls"]:
                 raw_text, metadata = extract_excel_text(content, ext)
             elif ext in [".docx"]:
-                 raw_text, metadata = extract_docx(content)
+                 raw_text, metadata = extract_docx(content, mode=extraction_mode)
             elif ext in [".pptx"]:
-                 raw_text, metadata = extract_pptx(content)
+                 raw_text, metadata = extract_pptx(content, mode=extraction_mode)
             elif ext in [".png", ".jpg", ".jpeg", ".tiff", ".bmp"]:
-                 raw_text, metadata = extract_image(content)
+                 raw_text, metadata = extract_image(content, mode=extraction_mode)
             else:
                 raw_text, metadata = EXTRACTORS[ext](content)
             
             # Basic cleaning
-            cleaner = EnhancedRAGTextCleaner(CleaningOptions(
-                normalize_unicode=normalize_unicode,
-                remove_urls=remove_urls,
-                remove_emails=remove_emails,
-                clean_whitespace=clean_whitespace,
-                preserve_structure=preserve_structure,
-                enable_ocr=enable_ocr,
-                aggressive_cleaning=aggressive_cleaning
-            ))
+            cleaner = EnhancedRAGTextCleaner(CleaningOptions())
             cleaned_text = cleaner.clean_text(raw_text)
             
             return {
