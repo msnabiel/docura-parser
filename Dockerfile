@@ -10,6 +10,7 @@ WORKDIR /app
 
 # Install system-level dependencies (including Tesseract and required libs)
 RUN apt-get update && apt-get install -y \
+    ghostscript \
     build-essential \
     tesseract-ocr \
     poppler-utils \
