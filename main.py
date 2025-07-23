@@ -220,6 +220,7 @@ def extract_pdf_hybrid(file_bytes: bytes, enable_ocr: bool = True) -> tuple[str,
     meta = {"pages": 0, "methods": [], "ocr_pages": [], "fallback_used": False, "tables": 0, "table_pages": [], "layout_blocks": 0}
     # PyMuPDF layout-aware extraction
     try:
+        print(f"Extracting with PyMuPDF layout-aware...")
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         meta["pages"] = doc.page_count
         print(f"Number of pages: {meta['pages']}")
@@ -239,6 +240,7 @@ def extract_pdf_hybrid(file_bytes: bytes, enable_ocr: bool = True) -> tuple[str,
         meta["fallback_used"] = True
     # PyMuPDF dict extraction (for structure)
     try:
+        print(f"Extracting with PyMuPDF dict...")
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         for page_num in range(doc.page_count):
             page = doc.load_page(page_num)
@@ -256,6 +258,7 @@ def extract_pdf_hybrid(file_bytes: bytes, enable_ocr: bool = True) -> tuple[str,
         meta["fallback_used"] = True
     # PyPDF2
     try:
+        print(f"Extracting with PyPDF2...")
         reader = PdfReader(BytesIO(file_bytes))
         meta["methods"].append("PyPDF2")
         pypdf2_texts = [page.extract_text() or "" for page in reader.pages]
@@ -265,11 +268,18 @@ def extract_pdf_hybrid(file_bytes: bytes, enable_ocr: bool = True) -> tuple[str,
         meta["fallback_used"] = True
     # Camelot table extraction
     try:
+        print(f"Extracting tables with Camelot...")
         # Save to temp file for Camelot
         with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
         tables = camelot.read_pdf(tmp_path, pages="all")
+        try:
+            tables = camelot.read_pdf(tmp_path, pages="all", flavor="lattice")
+        except Exception as e:
+            logger.warning(f"Lattice mode failed: {e}. Trying stream mode.")
+            tables = camelot.read_pdf(tmp_path, pages="all", flavor="stream")
+        tables = camelot.read_pdf(tmp_path, pages="all", flavor="stream")
         table_texts = []
         for i, table in enumerate(tables):
             df = table.df
@@ -312,6 +322,7 @@ def extract_image_hybrid(file_bytes: bytes) -> tuple[str, dict]:
     results = []
     meta = {"methods": [], "preprocessing": [], "fallback_used": False}
     # Tesseract OCR (basic and preprocessed)
+    print(f"Extracting with Tesseract...")
     try:
         img = Image.open(BytesIO(file_bytes))
         if img.mode != 'RGB':
@@ -322,6 +333,8 @@ def extract_image_hybrid(file_bytes: bytes) -> tuple[str, dict]:
     except Exception as e:
         logger.warning(f"Tesseract basic OCR failed: {e}")
         meta["fallback_used"] = True
+    # Tesseract OCR (preprocessed)
+    print(f"Extracting with Tesseract preprocessed...")
     try:
         img = Image.open(BytesIO(file_bytes))
         if img.mode != 'RGB':
@@ -338,6 +351,7 @@ def extract_image_hybrid(file_bytes: bytes) -> tuple[str, dict]:
         logger.warning(f"Tesseract preprocessed OCR failed: {e}")
         meta["fallback_used"] = True
     # EasyOCR
+    print(f"Extracting with EasyOCR...")
     try:
         reader = easyocr.Reader(['en'], gpu=False)
         img = np.array(Image.open(BytesIO(file_bytes)))
