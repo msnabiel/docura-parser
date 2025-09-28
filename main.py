@@ -32,8 +32,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 
 class CleaningOptions(BaseModel):
     normalize_unicode: bool = True
-    remove_urls: bool = True
-    remove_emails: bool = True
+    remove_urls: bool = False
+    remove_emails: bool = False
     clean_whitespace: bool = True
     preserve_structure: bool = True
     max_length: int = 100000
@@ -411,8 +411,8 @@ async def parse_file(
     file: UploadFile = File(...),
     # Cleaning options
     normalize_unicode: bool = Query(True),
-    remove_urls: bool = Query(True),
-    remove_emails: bool = Query(True),
+    remove_urls: bool = Query(False),
+    remove_emails: bool = Query(False),
     clean_whitespace: bool = Query(True),
     preserve_structure: bool = Query(True),
     max_length: int = Query(100000),
